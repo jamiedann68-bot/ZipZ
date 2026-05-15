@@ -72,4 +72,4 @@ ZipZ uses **Rclone** for cloud transfers. To set it up:
 - **Bundling**: PAX-format Tar (Supports modern file features & symlinks).
 
 ---
-*Built for the Nexus Workspace within the Neurons Ecosystem.*
+*Built with Love.*
