@@ -74,20 +74,18 @@ def push_to_remote(local_path, remote_dest):
 
 def compress(source, output=None, level=3, exclude=None, threads=0, password=None, remote=None):
     """
-    Compress a file or directory into a ZipZ (.zz) archive, preserving symbolic links.
+    Compress a file or directory into a ZipZ (.zz) archive.
     """
-    # Use absolute() to keep the path but NOT dereference symlinks
     source_path = Path(source).absolute()
     if not source_path.exists() and not source_path.is_symlink():
         print(f"❌ Error: Source {source} does not exist.")
         sys.exit(1)
 
-    # Load .zipzignore
+    if exclude is None: exclude = []
     ignore_path = source_path / IGNORE_FILE if source_path.is_dir() else source_path.parent / IGNORE_FILE
     if ignore_path.exists():
         print(f"📄 Loading patterns from {ignore_path.name}...")
         with open(ignore_path, "r") as f:
-            if exclude is None: exclude = []
             exclude.extend([line.strip() for line in f if line.strip() and not line.startswith("#")])
 
     if output is None:
@@ -98,9 +96,13 @@ def compress(source, output=None, level=3, exclude=None, threads=0, password=Non
     print(f"📦 Zipping {source_path.name} into {output}...")
     
     def tar_filter(tarinfo):
-        if exclude:
-            for pattern in exclude:
-                if fnmatch.fnmatch(tarinfo.name, pattern) or fnmatch.fnmatch(os.path.basename(tarinfo.name), pattern):
+        if not exclude: return tarinfo
+        
+        path_segments = tarinfo.name.split('/')
+        for pattern in exclude:
+            clean_p = pattern.rstrip('/')
+            for segment in path_segments:
+                if fnmatch.fnmatch(segment, clean_p):
                     return None
         return tarinfo
 
@@ -111,10 +113,8 @@ def compress(source, output=None, level=3, exclude=None, threads=0, password=Non
             dest_file = f_out
             if password:
                 salt = os.urandom(SALT_SIZE)
-                f_out.write(ENC_MAGIC)
-                f_out.write(salt)
-                key = derive_key(password, salt)
-                aesgcm = AESGCM(key)
+                f_out.write(ENC_MAGIC); f_out.write(salt)
+                key = derive_key(password, salt); aesgcm = AESGCM(key)
                 class EncryptorWrapper:
                     def __init__(self, target): self.target = target
                     def write(self, data):
@@ -130,7 +130,6 @@ def compress(source, output=None, level=3, exclude=None, threads=0, password=Non
                 dest_file = EncryptorWrapper(f_out)
 
             with cctx.stream_writer(dest_file) as compressor:
-                # dereference=False in tarfile.open (default) preserves symlinks
                 with tarfile.open(fileobj=compressor, mode='w|', format=tarfile.PAX_FORMAT) as tar:
                     tar.add(str(source_path), arcname=source_path.name, filter=tar_filter)
         
@@ -142,8 +141,7 @@ def compress(source, output=None, level=3, exclude=None, threads=0, password=Non
         
         print(f"✅ Successfully created {output}")
         if remote:
-            push_to_remote(Path(output), remote)
-            push_to_remote(hash_file_path, remote)
+            push_to_remote(Path(output), remote); push_to_remote(hash_file_path, remote)
 
     except Exception as e:
         print(f"❌ Error during compression: {e}")
@@ -163,17 +161,12 @@ def decompress(archive, output_dir, password=None):
         print(f"❌ Error: Archive {archive} does not exist."); sys.exit(1)
 
     with open(archive_path, 'rb') as f_in:
-        magic = f_in.read(len(ENC_MAGIC))
-        is_encrypted = (magic == ENC_MAGIC)
+        magic = f_in.read(len(ENC_MAGIC)); is_encrypted = (magic == ENC_MAGIC)
         if is_encrypted:
             if not password: password = getpass.getpass("🔑 Enter password for decryption: ")
-            salt = f_in.read(SALT_SIZE)
-            key = derive_key(password, salt)
-            aesgcm = AESGCM(key)
+            salt = f_in.read(SALT_SIZE); key = derive_key(password, salt); aesgcm = AESGCM(key)
             class DecryptorWrapper:
-                def __init__(self, source):
-                    self.source = source
-                    self.buffer = b""
+                def __init__(self, source): self.source = source; self.buffer = b""
                 def read(self, size):
                     while len(self.buffer) < size:
                         nonce = self.source.read(NONCE_SIZE)
@@ -182,18 +175,12 @@ def decompress(archive, output_dir, password=None):
                         if not len_bytes: break
                         chunk_len = int.from_bytes(len_bytes, 'big')
                         encrypted = self.source.read(chunk_len)
-                        try:
-                            self.buffer += aesgcm.decrypt(nonce, encrypted, None)
-                        except:
-                            print("❌ Error: Decryption failed.")
-                            sys.exit(1)
-                    res = self.buffer[:size]
-                    self.buffer = self.buffer[size:]
-                    return res
+                        try: self.buffer += aesgcm.decrypt(nonce, encrypted, None)
+                        except: print("❌ Error: Decryption failed."); sys.exit(1)
+                    res = self.buffer[:size]; self.buffer = self.buffer[size:]; return res
             input_stream = DecryptorWrapper(f_in)
         else:
-            f_in.seek(0)
-            input_stream = f_in
+            f_in.seek(0); input_stream = f_in
 
         output_path = Path(output_dir).resolve()
         output_path.mkdir(parents=True, exist_ok=True)
@@ -213,17 +200,12 @@ def list_content(archive, password=None):
         print(f"❌ Error: Archive {archive} does not exist."); sys.exit(1)
 
     with open(archive_path, 'rb') as f_in:
-        magic = f_in.read(len(ENC_MAGIC))
-        is_encrypted = (magic == ENC_MAGIC)
+        magic = f_in.read(len(ENC_MAGIC)); is_encrypted = (magic == ENC_MAGIC)
         if is_encrypted:
             if not password: password = getpass.getpass("🔑 Enter password for listing: ")
-            salt = f_in.read(SALT_SIZE)
-            key = derive_key(password, salt)
-            aesgcm = AESGCM(key)
+            salt = f_in.read(SALT_SIZE); key = derive_key(password, salt); aesgcm = AESGCM(key)
             class DecryptorWrapper:
-                def __init__(self, source):
-                    self.source = source
-                    self.buffer = b""
+                def __init__(self, source): self.source = source; self.buffer = b""
                 def read(self, size):
                     while len(self.buffer) < size:
                         nonce = self.source.read(NONCE_SIZE)
@@ -240,16 +222,13 @@ def list_content(archive, password=None):
             f_in.seek(0); input_stream = f_in
 
         print(f"📜 Listing contents of {archive_path.name}:")
-        print("-" * 85)
-        print(f"{'Mode':<12} {'Size':>12} {'Modified':<20} {'Name'}")
-        print("-" * 85)
+        print("-" * 85); print(f"{'Mode':<12} {'Size':>12} {'Modified':<20} {'Name'}"); print("-" * 85)
         dctx = zstd.ZstdDecompressor()
         try:
             with dctx.stream_reader(input_stream) as reader:
                 with tarfile.open(fileobj=reader, mode='r|') as tar:
                     for member in tar:
-                        mode = stat.filemode(member.mode)
-                        size = format_size(member.size)
+                        mode = stat.filemode(member.mode); size = format_size(member.size)
                         mtime = datetime.fromtimestamp(member.mtime).strftime('%Y-%m-%d %H:%M:%S')
                         name = member.name + ("/" if member.isdir() else "")
                         print(f"{mode:<12} {size:>12} {mtime:<20} {name}")
@@ -293,8 +272,7 @@ def main():
 
     args = parser.parse_args(); pwd = args.password
     if pwd is True:
-        pwd = getpass.getpass("🔐 Enter password: ")
-        cpwd = getpass.getpass("🔐 Confirm: ")
+        pwd = getpass.getpass("🔐 Enter password: "); cpwd = getpass.getpass("🔐 Confirm: ")
         if pwd != cpwd: print("❌ Passwords mismatch."); sys.exit(1)
 
     if args.command == "compress": compress(args.source, args.output, args.level, args.exclude, args.threads, pwd, args.remote)
